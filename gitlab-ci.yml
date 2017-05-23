@@ -1,0 +1,76 @@
+variables:
+  IMAGE_NAME: gitlab.com:4567/$CI_PROJECT_NAME:latest
+
+stages:
+- build
+- test
+- release
+- deployment
+- cleanup
+
+build_image:
+  stage: build
+  script:
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN gitlab.com
+    - docker build -t $IMAGE_NAME .
+  tags:
+    - docker
+  only:
+    - develop
+
+run_specs_test:
+  stage: test
+  script:
+    - docker-compose -f docker-compose.yml -f docker-compose-staging.yml run web 'rake db:drop && rake db:create && rake db:migrate && rspec spec/'
+    - docker-compose down
+  tags:
+    - docker
+  only:
+    - develop
+  when: on_success
+
+push_image_to_registry:
+  stage: release
+  script:
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN gitlab.com:4567
+    - docker push $IMAGE_NAME
+  tags:
+    - docker
+  only:
+    - develop
+  when: on_success
+
+deploy_to_staging:
+  stage: deployment
+  variables:
+    RAILS_ENV: staging
+  script:
+    - rancher-compose --project-name $CI_PROJECT_NAME --url https://rancher-server.com --access-key "$RANCHER_ACCESS_KEY" --secret-key "$RANCHER_SECRET_KEY" --file ./deploy/rancher-docker-compose.yml up -d --confirm-upgrade --force-upgrade web
+  environment:
+    name: staging
+    url: http://staging.test.com
+  only:
+    - develop
+  tags:
+    - shell
+  when: on_success
+
+deploy_to_production:
+  stage: deployment
+  script:
+    - ansible-playbook ./deploy/deploy_code.yml -i ./deploy/hosts
+  environment:
+    name: production
+    url: http://test.com
+  only:
+    - master
+  tags:
+    - ansible
+
+cleanup_jobs:
+  stage: cleanup
+  script:
+    - docker rmi $(docker images -f dangling=true -q)
+  when: always
+  tags:
+    - docker
